@@ -943,6 +943,15 @@ heat_mat_focus <- imp_df_df_id %>%
 rownames(heat_mat_focus) <- imp_df_df_id$Protein
 
 # ---------------------------
+# Raw imputed log2 matrix
+# ---------------------------
+heat_mat_raw <- imp_df_df_id %>%
+  dplyr::select(all_of(sample_cols)) %>%
+  as.matrix()
+
+rownames(heat_mat_raw) <- imp_df_df_id$Protein
+
+# ---------------------------
 # Protein annotation (SAFE: no match(), no rowname dependency)
 # ---------------------------
 row_annot <- imp_df_df_id %>%
@@ -969,11 +978,16 @@ row_annot <- row_annot %>% filter(Protein %in% keep_proteins)
 # ---------------------------
 # Z-score scaling by protein
 # ---------------------------
+heat_mat_focus <- heat_mat_raw[keep_proteins, , drop = FALSE]
+
+# Z-score matrix for plotting
 heat_mat_scaled <- t(scale(t(heat_mat_focus)))
 
 keep <- complete.cases(heat_mat_scaled)
 
 heat_mat_scaled <- heat_mat_scaled[keep, , drop = FALSE]
+heat_mat_focus  <- heat_mat_focus[keep, , drop = FALSE]
+
 row_annot <- row_annot[keep, ]
 
 # ---------------------------
@@ -981,7 +995,11 @@ row_annot <- row_annot[keep, ]
 # ---------------------------
 meta_ord <- meta %>% arrange(group)
 
+# Heatmap matrix (z-scores)
 mat_top <- heat_mat_scaled[, meta_ord$sample_id, drop = FALSE]
+
+# Export matrix (imputed log2 intensities)
+mat_export <- heat_mat_focus[, meta_ord$sample_id, drop = FALSE]
 
 anno_ord <- meta_ord %>%
   dplyr::select(sample_id, group) %>%
@@ -1004,7 +1022,7 @@ annotation_colors <- list(
 # ---------------------------
 # EXPORT (FIXED AND STABLE)
 # ---------------------------
-export_df <- mat_top %>%
+export_df <- mat_export %>%
   as.data.frame() %>%
   tibble::rownames_to_column("Protein") %>%
   dplyr::left_join(row_annot, by = "Protein") %>%
@@ -1070,7 +1088,7 @@ library(tibble)
 # ---------------------------
 keywords <- c("globin", "ferritin")
 
-# ---------------------------
+## ---------------------------
 # Sample columns
 # ---------------------------
 sample_cols <- meta$sample_id
@@ -1083,6 +1101,15 @@ heat_mat_focus <- imp_df_df_id %>%
   as.matrix()
 
 rownames(heat_mat_focus) <- imp_df_df_id$Protein
+
+# ---------------------------
+# Raw imputed log2 matrix
+# ---------------------------
+heat_mat_raw <- imp_df_df_id %>%
+  dplyr::select(all_of(sample_cols)) %>%
+  as.matrix()
+
+rownames(heat_mat_raw) <- imp_df_df_id$Protein
 
 # ---------------------------
 # Protein annotation (SAFE: no match(), no rowname dependency)
@@ -1111,11 +1138,16 @@ row_annot <- row_annot %>% filter(Protein %in% keep_proteins)
 # ---------------------------
 # Z-score scaling by protein
 # ---------------------------
+heat_mat_focus <- heat_mat_raw[keep_proteins, , drop = FALSE]
+
+# Z-score matrix for plotting
 heat_mat_scaled <- t(scale(t(heat_mat_focus)))
 
 keep <- complete.cases(heat_mat_scaled)
 
 heat_mat_scaled <- heat_mat_scaled[keep, , drop = FALSE]
+heat_mat_focus  <- heat_mat_focus[keep, , drop = FALSE]
+
 row_annot <- row_annot[keep, ]
 
 # ---------------------------
@@ -1123,7 +1155,11 @@ row_annot <- row_annot[keep, ]
 # ---------------------------
 meta_ord <- meta %>% arrange(group)
 
+# Heatmap matrix (z-scores)
 mat_top <- heat_mat_scaled[, meta_ord$sample_id, drop = FALSE]
+
+# Export matrix (imputed log2 intensities)
+mat_export <- heat_mat_focus[, meta_ord$sample_id, drop = FALSE]
 
 anno_ord <- meta_ord %>%
   dplyr::select(sample_id, group) %>%
@@ -1146,7 +1182,7 @@ annotation_colors <- list(
 # ---------------------------
 # EXPORT (FIXED AND STABLE)
 # ---------------------------
-export_df <- mat_top %>%
+export_df <- mat_export %>%
   as.data.frame() %>%
   tibble::rownames_to_column("Protein") %>%
   dplyr::left_join(row_annot, by = "Protein") %>%
@@ -1209,7 +1245,7 @@ library(openxlsx)
 # ---------------------------
 keywords <- c("proteasome")
 
-# ---------------------------
+## ---------------------------
 # Sample columns
 # ---------------------------
 sample_cols <- meta$sample_id
@@ -1222,6 +1258,15 @@ heat_mat_focus <- imp_df_df_id %>%
   as.matrix()
 
 rownames(heat_mat_focus) <- imp_df_df_id$Protein
+
+# ---------------------------
+# Raw imputed log2 matrix
+# ---------------------------
+heat_mat_raw <- imp_df_df_id %>%
+  dplyr::select(all_of(sample_cols)) %>%
+  as.matrix()
+
+rownames(heat_mat_raw) <- imp_df_df_id$Protein
 
 # ---------------------------
 # Protein annotation (SAFE: no match(), no rowname dependency)
@@ -1250,11 +1295,16 @@ row_annot <- row_annot %>% filter(Protein %in% keep_proteins)
 # ---------------------------
 # Z-score scaling by protein
 # ---------------------------
+heat_mat_focus <- heat_mat_raw[keep_proteins, , drop = FALSE]
+
+# Z-score matrix for plotting
 heat_mat_scaled <- t(scale(t(heat_mat_focus)))
 
 keep <- complete.cases(heat_mat_scaled)
 
 heat_mat_scaled <- heat_mat_scaled[keep, , drop = FALSE]
+heat_mat_focus  <- heat_mat_focus[keep, , drop = FALSE]
+
 row_annot <- row_annot[keep, ]
 
 # ---------------------------
@@ -1262,7 +1312,11 @@ row_annot <- row_annot[keep, ]
 # ---------------------------
 meta_ord <- meta %>% arrange(group)
 
+# Heatmap matrix (z-scores)
 mat_top <- heat_mat_scaled[, meta_ord$sample_id, drop = FALSE]
+
+# Export matrix (imputed log2 intensities)
+mat_export <- heat_mat_focus[, meta_ord$sample_id, drop = FALSE]
 
 anno_ord <- meta_ord %>%
   dplyr::select(sample_id, group) %>%
@@ -1285,7 +1339,7 @@ annotation_colors <- list(
 # ---------------------------
 # EXPORT (FIXED AND STABLE)
 # ---------------------------
-export_df <- mat_top %>%
+export_df <- mat_export %>%
   as.data.frame() %>%
   tibble::rownames_to_column("Protein") %>%
   dplyr::left_join(row_annot, by = "Protein") %>%
