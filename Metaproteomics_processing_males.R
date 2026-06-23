@@ -783,14 +783,20 @@ var_PC2 <- round(100 * eig[2] / sum(eig), 1)
 pcoa_df <- pcoa_df %>%
   left_join(meta %>% select(sample_id, group), by = "sample_id")
 
-# ---------------------------
-# Define colors
-# ---------------------------
+pcoa_df <- pcoa_df %>%
+  mutate(
+    group = factor(
+      group,
+      levels = c("control", "hfid", "dss", "dss_hfid"),
+      labels = c("Control", "HFiD", "DSS", "DSS+HFiD")
+    )
+  )
+
 group_colors <- c(
-  "control" = "lightblue",
-  "hfid" = "lightcoral",
-  "dss" = "lightgreen",
-  "dss_hfid" = "pink"
+  "Control"   = "#0072B2",
+  "HFiD"      = "#E69F00",
+  "DSS"       = "#CC79A7",
+  "DSS+HFiD"  = "#009E73"
 )
 
 # ---------------------------
@@ -995,4 +1001,5 @@ write.xlsx(
   xlsx_file,
   rowNames = FALSE
 )
+
 
