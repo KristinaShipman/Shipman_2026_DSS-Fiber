@@ -877,7 +877,7 @@ for (cat in names(split_list)) {
 
 
 #############################################################################
-# make KEGG pathway heatmap for onlu select pathways of interest, type kos
+# make KEGG pathway heatmap for only select pathways of interest, type kos
 #############################################################################
 
 library(dplyr)
@@ -2131,13 +2131,18 @@ plot_protein_taxa <- function(
     ) %>%
     ungroup()
   
+  group_levels <- c("control", "hfid", "dss", "dss_hfid")
+  
+  df_group$group <- factor(df_group$group, levels = group_levels)
+  df_protein$group <- factor(df_protein$group, levels = group_levels)
+  
   # -----------------------------
   # Factor levels
   # -----------------------------
   group_levels <- c("control", "hfid", "dss", "dss_hfid")
   
-  df_group$group <- factor(df_group$group, levels = group_levels)
-  df_protein$group <- factor(df_protein$group, levels = group_levels)
+  group_labels <- c("Control", "HFiD", "DSS", "DSS+HFiD")
+  
   
   # -----------------------------
   # Pairwise stats
@@ -2160,6 +2165,9 @@ plot_protein_taxa <- function(
   # -----------------------------
   # Bracket positions
   # -----------------------------
+  # -----------------------------
+  # Bracket positions (FIXED)
+  # -----------------------------
   y_max_all <- df_group %>%
     group_by(group) %>%
     summarise(total = sum(RelAbundance), .groups = "drop") %>%
@@ -2170,10 +2178,10 @@ plot_protein_taxa <- function(
   start_height  <- 1.15 * y_max_all
   
   stats_posthoc_plot <- stats_posthoc_plot %>%
-    arrange(p.adj) %>%
     mutate(
-      y.position = start_height +
-        (row_number() - 1) * step_increase
+      xmin = group1,
+      xmax = group2,
+      y.position = start_height + (row_number() * step_increase)
     )
   
   # -----------------------------
@@ -2188,6 +2196,16 @@ plot_protein_taxa <- function(
   
   names(palette) <- unique(df_group$Taxa_name)
   
+  taxa_levels <- unique(df_group$Taxa_name)
+  
+  taxa_labels_wrapped <- setNames(
+    stringr::str_wrap(taxa_levels, width = 25),
+    taxa_levels
+  )
+  
+  # -----------------------------
+  # Plot
+  # -----------------------------
   # -----------------------------
   # Plot
   # -----------------------------
@@ -2196,10 +2214,27 @@ plot_protein_taxa <- function(
     aes(x = group, y = RelAbundance, fill = Taxa_name)
   ) +
     geom_col(color = "black") +
+    scale_x_discrete(
+      labels = c(
+        control = "Control",
+        hfid = "HFiD",
+        dss = "DSS",
+        dss_hfid = "DSS+HFiD"
+      )
+    ) +
     scale_fill_manual(
       name = "Taxa",
       values = palette,
-      labels = parse(text = unique(df_group$Taxa_name))
+      labels = setNames(
+        parse(text = taxa_levels),
+        taxa_levels
+      )
+    ) +
+    guides(fill = guide_legend(ncol = 1, byrow = TRUE)) +
+    theme_classic(base_size = 12) +
+    theme(
+      legend.text = element_text(size = 8),
+      legend.key.height = unit(0.4, "cm")
     ) +
     stat_pvalue_manual(
       stats_posthoc_plot,
@@ -2212,12 +2247,13 @@ plot_protein_taxa <- function(
       ),
       tip.length = 0.01
     ) +
-    theme_classic(base_size = 12) +
     labs(
       title = paste0(protein_name, " (", sex_label, ")"),
       x = "Treatment Group",
       y = "Relative abundance (%)"
-    )
+    ) + 
+    # --> ADD THIS LINE <--
+    ggh4x::force_panelsizes(rows = unit(4, "in"), cols = unit(2.25, "in")) 
   
   print(p)
   
@@ -2227,7 +2263,7 @@ plot_protein_taxa <- function(
   ggsave(
     paste0(output_prefix, "_plot.png"),
     p,
-    width = 5.5,
+    width = 7,  # You may need to increase the total width to ensure wide legends aren't clipped
     height = 5,
     dpi = 600
   )
@@ -2276,6 +2312,7 @@ plot_protein_taxa <- function(
   return(p)
 }
 
+
 #SPECIFY PROTEINS YOU WANT TO PLOT BY TAXA
 
 proteins <- c(
@@ -2303,8 +2340,6 @@ for (prot in proteins) {
 ############################################################################################
 #STACKED KEGG PATHWAY CONTRIBUTION PLOTS (EITHER TAXA OR PROTEIN STACKED)
 ############################################################################################
-
-
 
 library(dplyr)
 library(tidyr)
@@ -2834,12 +2869,15 @@ result <- plot_ko_pathway(
 #RUN THIS TO ONLY DISPLAY TOP 10 TAXA/PROTEINS IN A KEGG PATHWAY AND THEN SHADE EVERYTHING ELSE GREY AS "OTHER"
 
 ## TOP 10 COLORED CONTRIBUTIONS 
+## TOP 10 COLORED CONTRIBUTIONS 
 library(dplyr)
 library(ggplot2)
 library(rstatix)
 library(ggpubr)
 library(openxlsx)
 library(ggtext)
+library(stringr)
+library(ggh4x)
 
 # -----------------------------
 # Helper
@@ -2857,7 +2895,7 @@ get_top_features <- function(df, feature_col, value_col, top_n = 10) {
 # MAIN FUNCTION
 # -----------------------------
 plot_ko_pathway <- function(df_rel, meta, ko_number, pathway_name,
-                            sex = "females",
+                            sex = "males",
                             top_n = 10,
                             excel_file = NULL) {
   
@@ -2880,6 +2918,7 @@ plot_ko_pathway <- function(df_rel, meta, ko_number, pathway_name,
     mutate(Function_clean = Function %>%
              gsub("^MAG:\\s*", "", .) %>%
              gsub("\\s*n=\\d+.*$", "", .) %>%
+             gsub("\\s*RepID=.*$", "", .) %>%  # Cleaned RepID tag
              trimws()) %>%
     mutate(Function_clean = case_when(
       grepl("status=", Function_clean, ignore.case = TRUE) ~ "unannotated",
@@ -2892,7 +2931,12 @@ plot_ko_pathway <- function(df_rel, meta, ko_number, pathway_name,
   top_proteins <- get_top_features(df_protein_group, "Function_clean", "RelAbundance", top_n)
   protein_levels <- c("Other", top_proteins)
   
-  # ✔ FIX: correct collapse AFTER labeling
+  # Wrap long protein names into multiple lines (e.g., max 30 characters wide)
+  protein_labels_wrapped <- setNames(
+    stringr::str_wrap(protein_levels, width = 30),
+    protein_levels
+  )
+  
   df_protein_group <- df_protein_group %>%
     mutate(
       Feature_group = ifelse(Function_clean %in% top_proteins,
@@ -2999,11 +3043,23 @@ plot_ko_pathway <- function(df_rel, meta, ko_number, pathway_name,
   # PLOTS
   # =========================================================
   
-  p_protein <- ggplot(df_protein_group,
+  # -----------------
+  # Protein Plot
+  # -----------------
+  p_protein <- ggplot(df_protein_group, 
                       aes(x = group, y = RelAbundance, fill = Feature_group)) +
     geom_col(color="black", position=position_stack(reverse=TRUE)) +
-    scale_fill_manual(values = palette_protein,
-                      breaks = rev(protein_levels),
+    scale_x_discrete(
+      labels = c(
+        "control" = "Control",
+        "hfid" = "HFiD",
+        "dss" = "DSS",
+        "dss_hfid" = "DSS+HFiD"
+      )
+    ) +
+    scale_fill_manual(values = palette_protein, 
+                      breaks = rev(protein_levels), 
+                      labels = protein_labels_wrapped, # Two-line wrap
                       name = "Protein") +
     stat_pvalue_manual(
       pw_protein,
@@ -3014,17 +3070,34 @@ plot_ko_pathway <- function(df_rel, meta, ko_number, pathway_name,
       tip.length=0.01
     ) +
     labs(
-      title = paste0("Proteins contributing to ", pathway_name,
-                     " (", ko_number, ") in ", sex)
+      title = paste0("Proteins contributing to ", pathway_name, 
+                     " (", ko_number, ") in ", sex),
+      x = "Treatment Group"
     ) +
-    theme_classic()
+    theme_classic() +
+    # Enforce strict pixel size for axes panel (Width x Height)
+    ggh4x::force_panelsizes(rows = unit(5, "in"), cols = unit(3, "in"))
   
-  p_taxa <- ggplot(df_taxa_group,
+  # -----------------
+  # Taxa Plot
+  # -----------------
+  p_taxa <- ggplot(df_taxa_group, 
                    aes(x = group, y = RelAbundance, fill = Feature_group)) +
     geom_col(color="black", position=position_stack(reverse=TRUE)) +
-    scale_fill_manual(values = palette_taxa,
-                      breaks = rev(taxa_levels),
-                      labels = taxa_labels,
+    
+    # --> ADD THIS BLOCK <--
+    scale_x_discrete(
+      labels = c(
+        "control" = "Control",
+        "hfid" = "HFiD",
+        "dss" = "DSS",
+        "dss_hfid" = "DSS+HFiD"
+      )
+    ) +
+    
+    scale_fill_manual(values = palette_taxa, 
+                      breaks = rev(taxa_levels), 
+                      labels = taxa_labels, 
                       name = "Taxa") +
     theme_classic() +
     theme(legend.text = element_markdown()) +
@@ -3037,14 +3110,15 @@ plot_ko_pathway <- function(df_rel, meta, ko_number, pathway_name,
       tip.length=0.01
     ) +
     labs(
-      title = paste0("Taxa contributing to ", pathway_name,
-                     " (", ko_number, ") in ", sex)
+      title = paste0("Taxa contributing to ", pathway_name, 
+                     " (", ko_number, ") in ", sex),
+      x = "Treatment Group" # Optional: Cleans up the x-axis title
     )
+  
   
   # =========================================================
   # EXCEL EXPORT
   # =========================================================
-  
   if (!is.null(excel_file)) {
     wb <- createWorkbook()
     addWorksheet(wb, "KW_Protein"); writeData(wb,1,kw_protein)
@@ -3054,9 +3128,9 @@ plot_ko_pathway <- function(df_rel, meta, ko_number, pathway_name,
     saveWorkbook(wb, excel_file, overwrite=TRUE)
   }
   
-  # SAVE
-  ggsave(paste0(ko_number,"_protein.png"), p_protein, width=7, height=6, dpi=600)
-  ggsave(paste0(ko_number,"_taxa.png"), p_taxa, width=6, height=6, dpi=600)
+  # SAVE (Slightly increased total ggsave width to give wrapped text extra breathing room)
+  ggsave(paste0(ko_number,"_protein.png"), p_protein, width=8, height=6, dpi=600)
+  ggsave(paste0(ko_number,"_taxa.png"), p_taxa, width=8, height=6, dpi=600)
   
   return(list(
     protein_plot = p_protein,
@@ -3084,4 +3158,24 @@ result <- plot_ko_pathway(
   pathway_name = "Galactose metabolism",
   top_n = 10,
   excel_file = "ko00052_stats.xlsx"
+)
+
+# Usage:
+result <- plot_ko_pathway(
+  df_rel = df_rel,
+  meta = meta,
+  ko_number = "ko00360",
+  pathway_name = "Phenylalanine metabolism - females",
+  top_n = 10,
+  excel_file = "ko00360_stats.xlsx"
+)
+
+# Usage:
+result <- plot_ko_pathway(
+  df_rel = df_rel,
+  meta = meta,
+  ko_number = "ko00480",
+  pathway_name = "Glutathioine metabolism - females",
+  top_n = 10,
+  excel_file = "ko00480_stats.xlsx"
 )
