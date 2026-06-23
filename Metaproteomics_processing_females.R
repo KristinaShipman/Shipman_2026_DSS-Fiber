@@ -11,7 +11,7 @@ library(writexl)
 #OUTLIER TEST on raw data
 ########################################################################################################################
 #set working directory
-setwd("/Users/kristinasorokolet/Library/CloudStorage/Box-Box/Wright Lab Operations/Student Folders/Kris/KS_2/Proteomics/GLOBAL/RANDOM_BINS/FEMALES_CTABS/")
+setwd("/Users/kristinasorokolet/Library/CloudStorage/Box-Box/Wright Lab Operations/Student Folders/Kris/KS_2/Proteomics/GLOBAL/RANDOM_BINS/FEMALES_CTABS/MS9_1p_75_unclus")
 
 df <- read_tsv("F_w_host_ms9_1p.tsv")
 meta <- read_tsv("metadata.tsv")  # must contain columns: SampleID, Group
@@ -255,26 +255,22 @@ df_full <- read_csv(ctab_file, show_col_types = FALSE)
 # -------------------------------------------------------------------
 annotation_cols <- c(
   "Cluster", "Gene", "Function", "Peptide.Number",
-  "Unique.Peptide.s.", "Shared.Peptide.s.", "Peptides",
-  "Flanked.Peptides", "gene", "function", "Taxa", "KEGG_Pathway"
+  "Unique Peptides.", "Shared Peptides.", "Peptides",
+  "Flanked Peptides", "gene", "function", "Taxa", "KEGG_Pathway", "Peptide Number", 
+  "Unique Peptide(s)", "Shared Peptide(s)"
 )
 
 # -------------------------------------------------------------------
 # Split annotation + abundance
 # -------------------------------------------------------------------
+
 annotation <- df_full %>%
   select(any_of(annotation_cols)) %>%
   mutate(Protein = df_full[[1]])
 
-df_main <- df_full %>%
+df <- df_full %>%
   column_to_rownames(var = names(df_full)[1]) %>%
   select(-any_of(annotation_cols))
-
-# Subset columns to samples of interest
-df <- df_main %>% select(all_of(samples_to_keep))
-
-# Filter metadata to match columns
-meta <- meta %>% filter(sample_id %in% colnames(df))
 
 # -------------------------------
 # Check matching
@@ -516,7 +512,6 @@ write.xlsx(df_full, "log2_data.xlsx", rowNames = FALSE)
 ################################################################################################
 #NORMALIZE BASED ON MEAN
 ################################################################################################
-
 
 # Convert to numeric matrix while keeping rownames
 df_log2_mat <- as.matrix(df_log2)
@@ -788,14 +783,20 @@ var_PC2 <- round(100 * eig[2] / sum(eig), 1)
 pcoa_df <- pcoa_df %>%
   left_join(meta %>% select(sample_id, group), by = "sample_id")
 
-# ---------------------------
-# Define colors
-# ---------------------------
+pcoa_df <- pcoa_df %>%
+  mutate(
+    group = factor(
+      group,
+      levels = c("control", "hfid", "dss", "dss_hfid"),
+      labels = c("Control", "HFiD", "DSS", "DSS+HFiD")
+    )
+  )
+
 group_colors <- c(
-  "control" = "lightblue",
-  "hfid" = "lightcoral",
-  "dss" = "lightgreen",
-  "dss_hfid" = "pink"
+  "Control"   = "#0072B2",
+  "HFiD"      = "#E69F00",
+  "DSS"       = "#CC79A7",
+  "DSS+HFiD"  = "#009E73"
 )
 
 # ---------------------------
@@ -837,7 +838,6 @@ library(openxlsx)
 # Make a copy to work on
 imp_df <- as.matrix(n_df_final)
 mode(imp_df) <- "numeric"
-
 
 # -------------------------
 #impute MAR
