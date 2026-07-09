@@ -22,18 +22,19 @@ meta <- meta %>%
                         "group4" = "hfid"))
 
 ####################################################################################
-#mouse to bacterial protein ratio
+# mouse to bacterial protein ratio
 ####################################################################################
 library(tidyverse)
+library(openxlsx) # Added for multi-sheet Excel export
 
-ctab_file <- "F_w_host_ms9_1p_r_filtered75.csv"
+ctab_file <- "F_w_host_ms9_1p_r_filtered75.tsv"
 
-df_raw <- read_csv(ctab_file, show_col_types = FALSE)
+df_raw <- read_tsv(ctab_file, show_col_types = FALSE)
 
 # Store first column name (protein annotation / taxonomy)
 id_col <- names(df_raw)[1]
 
-# Identify sample columns
+# Identify sample columns (assumes 'meta' dataframe is already loaded in your environment)
 samples_to_keep <- unique(meta$sample_id)
 
 df <- df_raw %>%
@@ -79,13 +80,19 @@ ggsave(
   dpi = 300
 )
 
+# Join metadata to get 'group' assignments
 df_rel <- df_rel %>%
   left_join(meta, by = "sample_id")
 
+# -----------------------------------------------------------------------------
+# Calculate Group Averages 
+# -----------------------------------------------------------------------------
 df_group_avg <- df_rel %>%
   group_by(group, Source) %>%
   summarise(
     mean_rel_abundance = mean(rel_abundance, na.rm = TRUE),
+    sd_rel_abundance = sd(rel_abundance, na.rm = TRUE), # Added for Excel output
+    n_samples = n(),                                    # Added for Excel output
     .groups = "drop"
   )
 
@@ -113,26 +120,17 @@ p_group <- ggplot(df_group_avg,
   ) +
   theme_bw(base_size = 11) +
   theme(
-    # Text hierarchy
     plot.title = element_text(face = "bold", size = 12, hjust = 0),
     axis.title.x = element_text(size = 11),
     axis.text.y = element_text(face = "bold", size = 10),
     axis.text.x = element_text(size = 10),
-    
-    # Clean panel
     panel.grid.major.y = element_blank(),
     panel.grid.minor = element_blank(),
-    panel.grid.major.x = element_line(size = 0.3, color = "grey85"),
-    
-    # Axis lines
-    axis.line = element_line(color = "black", size = 0.4),
-    
-    # Legend
+    panel.grid.major.x = element_line(linewidth = 0.3, color = "grey85"),
+    axis.line = element_line(color = "black", linewidth = 0.4),
     legend.title = element_blank(),
     legend.position = "top",
     legend.text = element_text(size = 10),
-    
-    # Spacing
     plot.margin = margin(5, 10, 5, 5)
   )
 
@@ -143,6 +141,139 @@ ggsave(
   height = 4,
   dpi = 300
 )
+
+# ####################################################################################
+# Statistical Analysis & Excel Export
+# ####################################################################################
+
+# 1. Statistical Analysis (Testing % Bacteria across groups)
+# Since Mouse + Bacteria = 100%, we only need to test one source.
+df_stats_input <- df_rel %>% filter(Source == "Bacteria")
+
+# Run ANOVA
+anova_res <- aov(rel_abundance ~ group, data = df_stats_input)
+anova_summary <- summary(anova_res)
+
+# Run Tukey's Honest Significant Difference for pairwise group comparisons
+tukey_res <- TukeyHSD(anova_res)
+tukey_df <- as.data.frame(tukey_res$group) %>%
+  rownames_to_column(var = "Comparison") %>%
+  rename(p_adj = `p adj`) # Clean up column name
+
+# 2. Prepare Data Frames for Excel Export (Converting to exact %)
+# Individual Sample Percentages (Pivoted for easy reading: Row = Sample, Cols = Mouse/Bacteria)
+excel_individual_samples <- df_rel %>%
+  mutate(Percentage = rel_abundance * 100) %>%
+  select(sample_id, group, Source, Percentage) %>%
+  pivot_wider(names_from = Source, values_from = Percentage, names_prefix = "%_")
+
+# Group Means and Standard Deviations
+excel_group_means <- df_group_avg %>%
+  mutate(
+    `Mean_%` = mean_rel_abundance * 100,
+    `SD_%` = sd_rel_abundance * 100
+  ) %>%
+  select(group, Source, `Mean_%`, `SD_%`, n_samples) %>%
+  arrange(Source, group)
+
+# 3. Create and Save the Excel Workbook
+wb <- createWorkbook()
+
+# Add worksheets
+addWorksheet(wb, "Individual_Samples")
+addWorksheet(wb, "Group_Means")
+addWorksheet(wb, "Stats_Tukey_PostHoc")
+
+# Write data to worksheets
+writeData(wb, "Individual_Samples", excel_individual_samples)
+writeData(wb, "Group_Means", excel_group_means)
+writeData(wb, "Stats_Tukey_PostHoc", tukey_df)
+
+# Save the workbook
+saveWorkbook(wb, "Mouse_vs_Microbiome_Contribution_Data.xlsx", overwrite = TRUE)
+
+# -----------------------------------------------------------------------------
+# Calculate Group Averages & Set Capitalized Labels
+# -----------------------------------------------------------------------------
+df_group_avg <- df_group_avg %>%
+  mutate(
+    # The 'levels' look for your original data; the 'labels' rename them for the plot
+    group = factor(group, 
+                   levels = c("control", "hfid", "dss", "dss_hfid"),
+                   labels = c("Control", "HFiD", "DSS", "DSS+HFiD"))
+  )
+
+# -----------------------------------------------------------------------------
+# Generate Horizontal Bar Plot
+# -----------------------------------------------------------------------------
+p_group <- ggplot(df_group_avg,
+                  aes(x = group,
+                      y = mean_rel_abundance,
+                      fill = Source)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  
+  # Add percentage text inside the stacked bars
+  geom_text(aes(label = paste0(round(mean_rel_abundance * 100, 1), "%")),
+            position = position_stack(vjust = 0.5), 
+            size = 5, 
+            color = "black") +
+  
+  coord_flip() +
+  
+  # Expand the Y-axis slightly to make room for the bracket
+  scale_y_continuous(
+    limits = c(0, 1.15), 
+    expand = c(0, 0),
+    labels = scales::percent_format(accuracy = 1),
+    breaks = seq(0, 1, 0.25) 
+  ) +
+  labs(
+    x = NULL,
+    y = "Relative abundance (%)",
+    title = "Host vs microbial protein contribution (females)"
+  ) +
+  
+  # Reverse the legend order to match the physical layout of the stacked bars
+  guides(fill = guide_legend(reverse = TRUE)) +
+  
+  # Significance Bracket for DSS (Position 3) vs DSS+HFiD (Position 4)
+  # Vertical drop for 'DSS'
+  annotate("segment", x = 3, xend = 3, y = 1.02, yend = 1.05, linewidth = 0.6) +
+  # Vertical drop for 'DSS+HFiD'
+  annotate("segment", x = 4, xend = 4, y = 1.02, yend = 1.05, linewidth = 0.6) +
+  # Connecting bracket line
+  annotate("segment", x = 3, xend = 4, y = 1.05, yend = 1.05, linewidth = 0.6) +
+  # "****" text
+  annotate("text", x = 3.5, y = 1.08, label = "****", size = 4, fontface = "italic") +
+  
+  theme_bw(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 12, hjust = 0),
+    axis.title.x = element_text(size = 11),
+    
+    # *** ROTATED Y-AXIS LABELS HERE ***
+    axis.text.y = element_text(face = "bold", size = 10, angle = 45, hjust = 1),
+    
+    axis.text.x = element_text(size = 10),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(linewidth = 0.3, color = "grey85"),
+    axis.line = element_line(color = "black", linewidth = 0.4),
+    legend.title = element_blank(),
+    legend.position = "top",
+    legend.text = element_text(size = 10),
+    plot.margin = margin(5, 10, 5, 5)
+  )
+
+# Save the plot
+ggsave(
+  "group_average_horizontal_w_stat.png",
+  plot = p_group,
+  width = 5.5, 
+  height = 5,
+  dpi = 300
+)
+
 
 ##########################################################################################################################################################################################################
 #start processing filtered crosstabs 
@@ -419,7 +550,7 @@ df_full <- df_log2 %>%
 write.xlsx(df_full, "log2_data.xlsx", rowNames = FALSE)
 
 ################################################################################################
-#NORMALIZE BASED ON MEAN
+#NORMALIZE BASED ON MEDIAN
 ################################################################################################
 
 
@@ -1398,233 +1529,274 @@ dev.off()
 ####################################################################################
 #keyword box plots
 ####################################################################################
+
 library(dplyr)
 library(tidyr)
 library(stringr)
+library(tibble)
+library(limma)
 library(ggplot2)
-library(rstatix)
+library(readr)
+library(openxlsx)
+library(ggsignif)
+library(tibble)
 library(ggpubr)
 
+# -----------------------
+# 1. Load data
+# -----------------------
+
 crosstab <- read_tsv("imputed_data.tsv")
+meta <- read_tsv("metadata.tsv")
 
+# -----------------------
+# 2. Identify sample columns
+# -----------------------
 
-# Identify sample columns (all LI samples)
 sample_cols <- colnames(crosstab)[grepl("^LI", colnames(crosstab))]
+
+# -----------------------
+# 3. Keyword definitions (from crosstab directly)
+# -----------------------
+
+row_annot_kw <- crosstab %>%
+  select(Protein, Function) %>%
+  mutate(
+    label = ifelse(is.na(Function), Protein, Function),
+    keyword = case_when(
+      str_detect(label, regex("ferritin|globin", ignore_case = TRUE)) ~ "Ferritin/Globin",
+      str_detect(label, regex("immunoglobulin|\\bIg\\b", ignore_case = TRUE)) ~ "Immunoglobulin",
+      str_detect(label, regex("proteasome|psma|psmb|psmc|psmd", ignore_case = TRUE)) ~ "Proteasome",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(keyword))
+
+# -----------------------
+# 5. Build expression matrix
+# -----------------------
 
 expr_matrix <- crosstab %>%
   select(Protein, all_of(sample_cols)) %>%
   mutate(across(all_of(sample_cols), ~ as.numeric(.))) %>%
+  mutate(across(all_of(sample_cols), ~ 2^.)) %>%  # log2 -> linear
   column_to_rownames("Protein") %>%
   as.matrix()
 
-ctab_file <- "F_w_host_ms9_1p_r_filtered75.csv" 
-ctab_orig <- read_csv(ctab_file, show_col_types = FALSE)
+# -----------------------
+# 6. Relative abundance normalization
+# -----------------------
 
-prot_function <- ctab_orig %>%
-  select(Protein = 1, Function) %>%
-  mutate(
-    Protein = as.character(Protein),
-    Function = as.character(Function)
-  )
+expr_matrix <- sweep(expr_matrix, 2, colSums(expr_matrix, na.rm = TRUE), "/")
 
+# -----------------------
+# 7. Filter to keyword proteins
+# -----------------------
 
-keywords <- c("ferritin", "globin", "immunoglobulin", "\\bIg\\b")
-
-row_annot <- data.frame(Protein = rownames(expr_matrix)) %>%
-  left_join(prot_function, by = "Protein") %>%
-  mutate(label = ifelse(is.na(Function), Protein, Function))
-
-row_annot_kw <- row_annot %>%
-  mutate(keyword = case_when(
-    str_detect(label, regex("ferritin", ignore_case = TRUE)) ~ "Ferritin",
-    str_detect(label, regex("globin", ignore_case = TRUE)) ~ "Globin",
-    str_detect(label, regex("immunoglobulin|\\bIg\\b", ignore_case = TRUE)) ~ "Immunoglobulin",
-    TRUE ~ NA_character_
-  )) %>%
+expr_df <- as.data.frame(expr_matrix) %>%
+  rownames_to_column("Protein") %>%
+  left_join(row_annot_kw %>% select(Protein, keyword), by = "Protein") %>%
   filter(!is.na(keyword))
 
-expr_sub <- expr_matrix[rownames(expr_matrix) %in% row_annot_kw$Protein, ]
+# -----------------------
+# 8. Sum within keyword per sample
+# -----------------------
 
-expr_long <- as.data.frame(expr_sub) %>%
-  tibble::rownames_to_column("Protein") %>%
+keyword_sum <- expr_df %>%
+  group_by(keyword) %>%
+  summarise(across(all_of(sample_cols), sum), .groups = "drop")
+
+# -----------------------
+# 9. Long format
+# -----------------------
+
+expr_long <- keyword_sum %>%
   pivot_longer(
-    cols = -Protein,
+    cols = all_of(sample_cols),
     names_to = "sample_id",
     values_to = "abundance"
   ) %>%
-  left_join(meta, by = "sample_id") %>%
-  left_join(row_annot_kw %>% select(Protein, keyword), by = "Protein")
+  left_join(meta, by = "sample_id")
 
-stat_tests <- expr_long %>%
-  dplyr::group_by(keyword) %>%
-  rstatix::wilcox_test(abundance ~ group) %>%
-  rstatix::adjust_pvalue(method = "BH") %>%
-  rstatix::add_significance("p.adj")
+# -----------------------
+# 10. Limma analysis
+# -----------------------
 
-stat_tests <- expr_long %>%
-  group_by(keyword) %>%
-  pairwise_wilcox_test(abundance ~ group, p.adjust.method = "BH")
+expr_mat <- keyword_sum %>%
+  column_to_rownames("keyword") %>%
+  as.matrix()
 
-p <- ggplot(expr_long, aes(x = group, y = abundance, fill = group)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
-  geom_jitter(width = 0.15, size = 1, alpha = 0.5) +
-  facet_wrap(~ keyword, scales = "free_y") +
-  theme_classic() +
-  labs(
-    title = "Protein abundance by keyword",
-    x = NULL,
-    y = "Expression"
+# -----------------------
+# Align metadata to expression matrix
+# -----------------------
+
+meta_limma <- meta %>%
+  filter(sample_id %in% colnames(expr_mat)) %>%
+  mutate(group = factor(group, levels = c("control", "hfid", "dss", "dss_hfid"))) %>%
+  arrange(match(sample_id, colnames(expr_mat)))
+
+# reorder columns of expression matrix to match metadata
+expr_mat <- expr_mat[, meta_limma$sample_id]
+
+# -----------------------
+# Design matrix
+# -----------------------
+
+design <- model.matrix(~0 + group, data = meta_limma)
+colnames(design) <- levels(meta_limma$group)
+
+# sanity check (important)
+stopifnot(ncol(expr_mat) == nrow(design))
+
+# -----------------------
+# limma
+# -----------------------
+group_summary <- expr_long %>%
+  group_by(keyword, group) %>%
+  summarise(
+    mean_abundance = mean(abundance, na.rm = TRUE),
+    sd_abundance   = sd(abundance, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
   )
 
-library(dplyr)
 
-ypos <- expr_long %>%
-  group_by(keyword) %>%
-  summarise(max_y = max(abundance, na.rm = TRUE)) %>%
-  mutate(y.position = max_y * 1.1)
+fit <- lmFit(expr_mat, design)
 
-library(rstatix)
-
-stat_tests <- expr_long %>%
-  group_by(keyword) %>%
-  pairwise_wilcox_test(abundance ~ group, p.adjust.method = "BH")
-
-stat_tests <- stat_tests %>%
-  left_join(ypos %>% select(keyword, y.position), by = "keyword")
-
-p + stat_pvalue_manual(
-  stat_tests,
-  label = "p.adj.signif",
-  hide.ns = TRUE
+contrast_matrix <- makeContrasts(
+  control_vs_dss = control - dss,
+  control_vs_hfid = control - hfid,
+  control_vs_dss_hfid = control - dss_hfid,
+  hfid_vs_dss_hfid = hfid - dss_hfid,
+  dss_vs_dss_hfid = dss - dss_hfid,
+  levels = design
 )
 
-library(dplyr)
-library(tidyr)
-library(stringr)
-library(ggplot2)
-library(rstatix)
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
 
-# ---------------------------
-# 1. Color palette (FIXED FORMAT)
-# ---------------------------
+limma_stats <- bind_rows(lapply(colnames(contrast_matrix), function(coef) {
+  res <- topTable(fit2, coef = coef, number = Inf)
+  res$keyword <- rownames(res)
+  res$contrast <- coef
+  res
+}))
+
+write.xlsx(
+  list(
+    limma_results = limma_stats,
+    keyword_sums_per_sample = keyword_sum,
+    long_format = expr_long,
+    group_summary = group_summary
+  ),
+  file = "keyword_analysis_output.xlsx"
+)
+
+# -----------------------
+# 11. Plotting
+# -----------------------
+
 group_colors <- c(
-  control  = "#0072B2",
-  hfid     = "#E69F00",
-  dss      = "#CC79A7",
+  control = "#0072B2",
+  hfid = "#E69F00",
+  dss = "#CC79A7",
   dss_hfid = "#009E73"
 )
 
-# ---------------------------
-# 2. Protein annotation + keyword mapping
-# ---------------------------
-row_annot <- data.frame(Protein = rownames(expr_matrix)) %>%
-  left_join(prot_function, by = "Protein") %>%
-  mutate(label = ifelse(is.na(Function), Protein, Function))
-
-row_annot_kw <- row_annot %>%
-  mutate(keyword = case_when(
-    str_detect(label, regex("ferritin|globin", ignore_case = TRUE)) ~ "Ferritin/Globin",
-    str_detect(label, regex("immunoglobulin|\\bIg\\b", ignore_case = TRUE)) ~ "Immunoglobulin",
-    str_detect(label, regex("proteasome|psm[a-z]|psmb|psma", ignore_case = TRUE)) ~ "Proteasome",
-    TRUE ~ NA_character_
-  )) %>%
-  filter(!is.na(keyword))
-
-# ---------------------------
-# 3. Subset expression matrix
-# ---------------------------
-expr_sub <- expr_matrix[rownames(expr_matrix) %in% row_annot_kw$Protein, ]
-
-# ---------------------------
-# 4. Long format
-# ---------------------------
-expr_long <- as.data.frame(expr_sub) %>%
-  tibble::rownames_to_column("Protein") %>%
-  pivot_longer(
-    cols = -Protein,
-    names_to = "sample_id",
-    values_to = "abundance"
-  ) %>%
-  left_join(meta, by = "sample_id") %>%
-  left_join(row_annot_kw %>% select(Protein, keyword), by = "Protein")
-
-expr_long <- expr_long %>%
-  mutate(group = factor(
-    group,
-    levels = c("control", "hfid", "dss", "dss_hfid")
-  ))
-
-# ---------------------------
-# 5. Plot function (CORE FIX)
-# ---------------------------
-plot_keyword <- function(data, kw) {
+plot_keyword <- function(df_long, limma_df, kw){
   
-  df <- data %>% filter(keyword == kw)
+  library(dplyr)
+  library(ggplot2)
+  library(ggpubr)
+  library(stringr)
   
-  stat <- df %>%
-    pairwise_wilcox_test(abundance ~ group, p.adjust.method = "BH") %>%
-    add_xy_position(x = "group", step.increase = 0.2)
+  # -----------------------
+  # 1. subset data
+  # -----------------------
+  d <- df_long %>% filter(keyword == kw)
   
-  ggplot(df, aes(x = group, y = abundance, fill = group)) +
+  if(nrow(d) == 0) return(NULL)
+  
+  # ENFORCE ORDER: Convert group to factor with specific levels
+  d$group <- factor(d$group, levels = c("control", "hfid", "dss", "dss_hfid"))
+  
+  # -----------------------
+  # 2. label mapping (ONLY for plotting)
+  # -----------------------
+  label_map <- c(
+    control = "Control",
+    hfid = "HFiD",
+    dss = "DSS",
+    dss_hfid = "DSS+HFiD"
+  )
+  
+  # -----------------------
+  # 3. build significance table from ALL limma contrasts
+  # -----------------------
+  sig_df <- limma_df %>%
+    filter(keyword == kw, adj.P.Val < 0.05)
+  
+  parts <- stringr::str_split_fixed(sig_df$contrast, "_vs_", 2)
+  
+  sig_df$group2 <- parts[,1]
+  sig_df$group1 <- parts[,2]
+  
+  # Pass raw names to avoid duplicate ghost labels on the axis
+  sig_df$xmin <- sig_df$group1
+  sig_df$xmax <- sig_df$group2
+  
+  # Calculate the highest data point
+  base_height <- max(d$abundance, na.rm = TRUE)
+  
+  # Define a fixed step size (e.g., 10% of the max height per bracket)
+  step_size <- base_height * 0.10 
+  
+  # Stack them dynamically based on how many rows are in sig_df
+  sig_df$y.position <- (base_height * 1.05) + (seq_len(nrow(sig_df)) - 1) * step_size
+  
+  sig_df$label <- ifelse(sig_df$adj.P.Val < 0.001, "***",
+                         ifelse(sig_df$adj.P.Val < 0.01, "**",
+                                ifelse(sig_df$adj.P.Val < 0.05, "*", "ns")))
+  
+  # -----------------------
+  # 4. plot
+  # -----------------------
+  ggplot(d, aes(group, abundance, fill = group)) +
     geom_boxplot(outlier.shape = NA, alpha = 0.7) +
-    geom_jitter(width = 0.15, size = 0.5, alpha = 0.5) +
-    scale_fill_manual(values = group_colors) +
-    stat_pvalue_manual(
-      stat,
-      label = "p.adj.signif",
-      hide.ns = TRUE
-    ) +
+    geom_jitter(width = 0.15, size = 1, alpha = 0.5) +
+    
+    scale_fill_manual(values = c(
+      control = "#0072B2",
+      hfid = "#E69F00",
+      dss = "#CC79A7",
+      dss_hfid = "#009E73"
+    )) +
+    
+    scale_x_discrete(labels = label_map) +
+    
     theme_classic() +
     labs(
       title = kw,
       x = NULL,
-      y = "Log2 expression"
+      y = "Summed Relative Abundance"
     ) +
-    theme(
-      axis.text.x = element_text(size = 14),   # group labels
-      axis.text.y = element_text(size = 14),
-      axis.title.y = element_text(size = 16),
-      plot.title = element_text(size = 18, face = "bold"),
-      legend.text = element_text(size = 16),
-      legend.title = element_text(size = 16, face = "bold")
+    
+    ggpubr::stat_pvalue_manual(
+      sig_df,
+      label = "label",
+      xmin = "xmin",
+      xmax = "xmax",
+      y.position = "y.position"
     )
 }
-# ---------------------------
-# 6. Generate plots
-# ---------------------------
-p_fg <- plot_keyword(expr_long, "Ferritin/Globin")
-p_ig <- plot_keyword(expr_long, "Immunoglobulin")
-p_prot <- plot_keyword(expr_long, "Proteasome")
 
-# ---------------------------
-# 7. Display
-# ---------------------------
-# Ferritin + Globin combined
-ggsave(
-  filename = "Ferritin_Globin_boxplot.png",
-  plot = p_fg,
-  width = 6,
-  height = 7,
-  dpi = 300
-)
+p1 <- plot_keyword(expr_long, limma_stats, "Ferritin/Globin")
+p2 <- plot_keyword(expr_long, limma_stats, "Immunoglobulin")
+p3 <- plot_keyword(expr_long, limma_stats, "Proteasome")
 
-# Immunoglobulin
-ggsave(
-  filename = "Immunoglobulin_boxplot.png",
-  plot = p_ig,
-  width = 6,
-  height = 8,
-  dpi = 300
-)
-
-ggsave(
-  filename = "Proteasome_boxplot.png",
-  plot = p_prot,
-  width = 6,
-  height = 7,
-  dpi = 300
-)
-
+ggsave("Ferritin_Globin.png", p1, width = 5, height = 4, dpi = 300)
+ggsave("Immunoglobulin.png", p2, width = 5, height = 4, dpi = 300)
+ggsave("Proteasome.png", p3, width = 5, height = 4, dpi = 300)
 
 ####################################################################################
 #trying to understand if dss or hfid has a stronger effect
