@@ -1309,9 +1309,691 @@ saveWorkbook(
 )
 
 ####################################################################################################################################
+####NOW MAKING BOX PLOT OF total INTENSITY OF ALL PROTEINS BELONGING TO AMINO ACID RELEVANT PATHWAYS
+####################################################################################################################################
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(limma)
+library(ggplot2)
+library(readr)
+library(ggsignif)
+
+crosstab <- read_csv("imputed_w_taxa_kegg.csv")
+
+# -----------------------------
+# 1. Filter data & calculate sample means for STATISTICS
+# -----------------------------
+target_kegg <- "ko00471|ko00460|ko00400|ko00410|ko00473|ko00450|ko00290|ko00340|ko00280|ko01230|ko00260|ko00330|ko00380|ko00300|ko00310|ko00250|ko00220|ko00350|ko00430|ko00270|ko00480|ko00360"
+
+sample_cols <- colnames(crosstab)[grepl("^LI", colnames(crosstab))]
+
+# Convert normalized log2 intensities back to linear intensities
+crosstab_linear <- crosstab %>%
+  mutate(across(all_of(sample_cols), ~ 2^.))
+
+# Calculate relative abundance within each sample
+crosstab_rel <- crosstab_linear %>%
+  mutate(
+    across(
+      all_of(sample_cols),
+      ~ . / sum(., na.rm = TRUE)
+    )
+  )
+
+# Sum relative abundances for proteins in amino acid pathways
+summed_intensities <- crosstab_rel %>%
+  filter(grepl(target_kegg, KEGG_Pathway)) %>%
+  select(all_of(sample_cols)) %>%
+  colSums(na.rm = TRUE)
+
+plot_df <- data.frame(
+  sample_id = names(summed_intensities),
+  total_intensity = summed_intensities
+) %>%
+  left_join(meta, by = "sample_id") %>%
+  filter(!is.na(group))
+
+plot_df$group <- factor(plot_df$group, levels = c("control", "hfid", "dss", "dss_hfid"))
+
+# -----------------------------
+# 2. Run limma stats on sample SUMS
+# -----------------------------
+expr_sum_matrix <- matrix(plot_df$total_intensity, nrow = 1)
+colnames(expr_sum_matrix) <- plot_df$sample_id
+
+design_sum <- model.matrix(~ 0 + group, data = plot_df)
+colnames(design_sum) <- levels(plot_df$group)
+
+fit_sum <- lmFit(expr_sum_matrix, design_sum)
+
+contrast_matrix_sum <- makeContrasts(
+  dss_hfid_vs_hfid = dss_hfid - hfid,
+  dss_hfid_vs_control = dss_hfid - control,
+  dss_vs_control = dss - control,
+  dss_hfid_vs_dss = dss_hfid - dss,      
+  levels = design_sum
+)
+
+fit2_sum <- contrasts.fit(fit_sum, contrast_matrix_sum)
+fit2_sum <- eBayes(fit2_sum)
+
+pvals <- fit2_sum$p.value[1, ]
+
+# -----------------------------
+# 6. SAVE STATS TO EXCEL
+# -----------------------------
+
+# Raw summed intensity for every sample
+sample_values <- plot_df %>%
+  arrange(group) %>%
+  select(sample_id, group, total_intensity)
+
+# Summary statistics
+group_summary <- plot_df %>%
+  group_by(group) %>%
+  summarise(
+    n = n(),
+    Mean = mean(total_intensity),
+    SD = sd(total_intensity),
+    SEM = SD/sqrt(n()),
+    Median = median(total_intensity),
+    Min = min(total_intensity),
+    Max = max(total_intensity),
+    .groups = "drop"
+  )
+
+# Limma statistics
+coef_names <- colnames(contrast_matrix_sum)
+
+stats_list <- lapply(coef_names, function(coef){
+  
+  res <- topTable(fit2_sum,
+                  coef = coef,
+                  number = Inf)
+  
+  res$Contrast <- coef
+  
+  res %>%
+    select(
+      Contrast,
+      logFC,
+      AveExpr,
+      t,
+      P.Value,
+      adj.P.Val,
+      B
+    )
+  
+})
+
+limma_stats <- bind_rows(stats_list)
+
+# Write workbook
+write_xlsx(
+  list(
+    Sample_Values = sample_values,
+    Group_Summary = group_summary,
+    Limma_Statistics = limma_stats
+  ),
+  path = "aa_pathway_stats_imp.xlsx"
+)
+
+# -----------------------------
+# 3. Update factor levels (No pivot_longer needed!)
+# -----------------------------
+plot_df$group <- factor(
+  plot_df$group, 
+  levels = c("control", "hfid", "dss", "dss_hfid"),
+  labels = c("Control", "HFiD", "DSS", "DSS+HFiD")
+)
+
+# -----------------------------
+# 1. Update the p-value formatting function to ONLY return asterisks
+# -----------------------------
+format_pval <- function(p) {
+  if (p < 0.001) return("***")
+  if (p < 0.01)  return("**")
+  if (p < 0.05)  return("*")
+  return("")
+}
+
+# -----------------------------
+# 2. Re-filter for significant comparisons
+# -----------------------------
+# (Your existing code to calculate sig_pairs and sig_annotations remains the same)
+# The sapply(all_pvals[sig_indices], format_pval) will now return only the symbols.
+
+# -----------------------------
+# 3. Generate the box plot
+# -----------------------------
+p_box <- ggplot(plot_df, aes(x = group, y = total_intensity, fill = group)) +
+  geom_boxplot(alpha = 0.8, outlier.shape = NA, color = "black") +
+  geom_jitter(width = 0.15, size = 2.5, alpha = 0.8, color = "black") +
+  scale_fill_manual(values = c(
+    "Control"  = "#0072B2", 
+    "HFiD"     = "#E69F00", 
+    "DSS"      = "#CC79A7", 
+    "DSS+HFiD" = "#009E73"
+  ))
+
+# -----------------------------
+# Create significance annotations
+# -----------------------------
+
+all_pvals <- fit2_sum$p.value[1, ]
+
+comparison_names <- list(
+  c("HFiD", "DSS+HFiD"),
+  c("Control", "DSS+HFiD"),
+  c("Control", "DSS"),
+  c("DSS", "DSS+HFiD")
+)
+
+format_pval <- function(p) {
+  if (p < 0.001) "***"
+  else if (p < 0.01) "**"
+  else if (p < 0.05) "*"
+  else ""
+}
+
+sig_idx <- which(all_pvals < 0.05)
+
+sig_pairs <- comparison_names[sig_idx]
+sig_annotations <- sapply(all_pvals[sig_idx], format_pval)
+
+# Add brackets with asterisk-only annotations
+if (length(sig_pairs) > 0) {
+  p_box <- p_box + 
+    geom_signif(
+      comparisons = sig_pairs,
+      annotations = sig_annotations, # Now contains only "***", "**", or "*"
+      step_increase = 0.12,  
+      margin_top = 0.05,
+      textsize = 5,                  # Slightly larger text for visibility
+      vjust = -0.2
+    )
+}
+
+p_box <- p_box + 
+  theme_classic(base_size = 13) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(face = "bold", color = "black"),
+    axis.text.y = element_text(color = "black"),
+    plot.title = element_text(face = "bold")
+  ) +
+  labs(
+    title = "Arginine and glutamate metabolizing proteins",
+    x = "Experimental Group",
+    y = "Protein relative abundance"
+  )
+
+print(p_box)
+
+ggsave(
+  "arginine_glutamate_pathway_proteins_boxplot_sum_imp.png",
+  p_box,
+  width=5,
+  height=5.5,
+  dpi=600
+)
+
+####################################################################################################################################
+####NOW MAKING BOX PLOT OF total INTENSITY OF ALL PROTEINS BELONGING TO fructose and galactose KEGG pathways 
+####################################################################################################################################
+crosstab <- read_csv("imputed_w_taxa_kegg.csv")
+
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(limma)
+library(ggplot2)
+library(readr)
+library(ggsignif)
+library(writexl) # Required for Excel export
+
+# -----------------------------
+# 1. Filter data & calculate sample SUMS
+# -----------------------------
+target_kegg <- "\\b(ko00051|ko00052)\\b"
+
+sample_cols <- colnames(crosstab)[grepl("^LI", colnames(crosstab))]
+
+# Convert normalized log2 intensities back to linear intensities
+crosstab_linear <- crosstab %>%
+  mutate(across(all_of(sample_cols), ~ 2^.))
+
+# Calculate relative abundance within each sample
+crosstab_rel <- crosstab_linear %>%
+  mutate(
+    across(
+      all_of(sample_cols),
+      ~ . / sum(., na.rm = TRUE)
+    )
+  )
+
+# Sum relative abundances for proteins in amino acid pathways
+summed_intensities <- crosstab_rel %>%
+  filter(grepl(target_kegg, KEGG_Pathway)) %>%
+  select(all_of(sample_cols)) %>%
+  colSums(na.rm = TRUE)
+
+plot_df <- data.frame(
+  sample_id = names(summed_intensities),
+  total_intensity = summed_intensities
+) %>%
+  left_join(meta, by = "sample_id") %>%
+  filter(!is.na(group))
+
+plot_df$group <- factor(plot_df$group, levels = c("control", "hfid", "dss", "dss_hfid"))
+
+# -----------------------------
+# 2. Run limma stats on sample SUMS
+# -----------------------------
+expr_sum_matrix <- matrix(plot_df$total_intensity, nrow = 1)
+colnames(expr_sum_matrix) <- plot_df$sample_id
+
+design_sum <- model.matrix(~ 0 + group, data = plot_df)
+colnames(design_sum) <- levels(plot_df$group)
+
+fit_sum <- lmFit(expr_sum_matrix, design_sum)
+
+contrast_matrix_sum <- makeContrasts(
+  dss_hfid_vs_hfid = dss_hfid - hfid,
+  dss_hfid_vs_control = dss_hfid - control,
+  dss_vs_control = dss - control,
+  dss_hfid_vs_dss = dss_hfid - dss,      
+  levels = design_sum
+)
+
+fit2_sum <- contrasts.fit(fit_sum, contrast_matrix_sum)
+fit2_sum <- eBayes(fit2_sum)
+
+pvals <- fit2_sum$p.value[1, ]
+
+# -----------------------------
+# 6. SAVE STATS TO EXCEL
+# -----------------------------
+
+# Raw summed intensity for every sample
+sample_values <- plot_df %>%
+  arrange(group) %>%
+  select(sample_id, group, total_intensity)
+
+# Summary statistics
+group_summary <- plot_df %>%
+  group_by(group) %>%
+  summarise(
+    n = n(),
+    Mean = mean(total_intensity),
+    SD = sd(total_intensity),
+    SEM = SD/sqrt(n()),
+    Median = median(total_intensity),
+    Min = min(total_intensity),
+    Max = max(total_intensity),
+    .groups = "drop"
+  )
+
+# Limma statistics
+coef_names <- colnames(contrast_matrix_sum)
+
+stats_list <- lapply(coef_names, function(coef){
+  
+  res <- topTable(fit2_sum,
+                  coef = coef,
+                  number = Inf)
+  
+  res$Contrast <- coef
+  
+  res %>%
+    select(
+      Contrast,
+      logFC,
+      AveExpr,
+      t,
+      P.Value,
+      adj.P.Val,
+      B
+    )
+  
+})
+
+limma_stats <- bind_rows(stats_list)
+
+# Write workbook
+write_xlsx(
+  list(
+    Sample_Values = sample_values,
+    Group_Summary = group_summary,
+    Limma_Statistics = limma_stats
+  ),
+  path = "51_52_pathway_stats_imp.xlsx"
+)
+
+# -----------------------------
+# 3. Update factor levels (No pivot_longer needed!)
+# -----------------------------
+plot_df$group <- factor(
+  plot_df$group, 
+  levels = c("control", "hfid", "dss", "dss_hfid"),
+  labels = c("Control", "HFiD", "DSS", "DSS+HFiD")
+)
+
+# -----------------------------
+# 1. Update the p-value formatting function to ONLY return asterisks
+# -----------------------------
+format_pval <- function(p) {
+  if (p < 0.001) return("***")
+  if (p < 0.01)  return("**")
+  if (p < 0.05)  return("*")
+  return("")
+}
+
+
+# -----------------------------
+# 3. Generate the box plot
+# -----------------------------
+p_box <- ggplot(plot_df, aes(x = group, y = total_intensity, fill = group)) +
+  geom_boxplot(alpha = 0.8, outlier.shape = NA, color = "black") +
+  geom_jitter(width = 0.15, size = 2.5, alpha = 0.8, color = "black") +
+  scale_fill_manual(values = c(
+    "Control"  = "#0072B2", 
+    "HFiD"     = "#E69F00", 
+    "DSS"      = "#CC79A7", 
+    "DSS+HFiD" = "#009E73"
+  ))
+
+# -----------------------------
+# Create significance annotations
+# -----------------------------
+
+all_pvals <- fit2_sum$p.value[1, ]
+
+comparison_names <- list(
+  c("HFiD", "DSS+HFiD"),
+  c("Control", "DSS+HFiD"),
+  c("Control", "DSS"),
+  c("DSS", "DSS+HFiD")
+)
+
+format_pval <- function(p) {
+  if (p < 0.001) "***"
+  else if (p < 0.01) "**"
+  else if (p < 0.05) "*"
+  else ""
+}
+
+sig_idx <- which(all_pvals < 0.05)
+
+sig_pairs <- comparison_names[sig_idx]
+sig_annotations <- sapply(all_pvals[sig_idx], format_pval)
+
+# Add brackets with asterisk-only annotations
+if (length(sig_pairs) > 0) {
+  p_box <- p_box + 
+    geom_signif(
+      comparisons = sig_pairs,
+      annotations = sig_annotations, # Now contains only "***", "**", or "*"
+      step_increase = 0.12,  
+      margin_top = 0.05,
+      textsize = 5,                  # Slightly larger text for visibility
+      vjust = -0.2
+    )
+}
+
+p_box <- p_box + 
+  theme_classic(base_size = 13) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(face = "bold", color = "black"),
+    axis.text.y = element_text(color = "black"),
+    plot.title = element_text(face = "bold")
+  ) +
+  labs(
+    title = "ko00051 and ko00052 metabolizing proteins",
+    x = "Experimental Group",
+    y = "Protein relative abundance"
+  )
+
+print(p_box)
+
+ggsave(
+  "51_52_pathway_proteins_boxplot_sum_imp.png",
+  p_box,
+  width=5,
+  height=5.5,
+  dpi=600
+)
+
+####################################################################################################################################
+####NOW MAKING BOX PLOT OF total INTENSITY OF ALL PROTEINS BELONGING TO all carb relevant pathways 
+####################################################################################################################################
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(limma)
+library(ggplot2)
+library(readr)
+library(ggsignif)
+
+crosstab <- read_csv("imputed_w_taxa_kegg.csv")
+
+# -----------------------------
+# 1. Filter data & calculate sample means for STATISTICS
+# -----------------------------
+target_kegg <- "ko00630|ko00650|ko00640|ko00500|ko01210|ko00053|ko00660|ko00660|ko00562|ko00020|ko00052|ko00010|ko00051|ko00030|ko00040|ko00620"
+
+sample_cols <- colnames(crosstab)[grepl("^LI", colnames(crosstab))]
+
+# Convert normalized log2 intensities back to linear intensities
+crosstab_linear <- crosstab %>%
+  mutate(across(all_of(sample_cols), ~ 2^.))
+
+# Calculate relative abundance within each sample
+crosstab_rel <- crosstab_linear %>%
+  mutate(
+    across(
+      all_of(sample_cols),
+      ~ . / sum(., na.rm = TRUE)
+    )
+  )
+
+# Sum relative abundances for proteins in amino acid pathways
+summed_intensities <- crosstab_rel %>%
+  filter(grepl(target_kegg, KEGG_Pathway)) %>%
+  select(all_of(sample_cols)) %>%
+  colSums(na.rm = TRUE)
+
+plot_df <- data.frame(
+  sample_id = names(summed_intensities),
+  total_intensity = summed_intensities
+) %>%
+  left_join(meta, by = "sample_id") %>%
+  filter(!is.na(group))
+
+plot_df$group <- factor(plot_df$group, levels = c("control", "hfid", "dss", "dss_hfid"))
+
+# -----------------------------
+# 2. Run limma stats on sample SUMS
+# -----------------------------
+expr_sum_matrix <- matrix(plot_df$total_intensity, nrow = 1)
+colnames(expr_sum_matrix) <- plot_df$sample_id
+
+design_sum <- model.matrix(~ 0 + group, data = plot_df)
+colnames(design_sum) <- levels(plot_df$group)
+
+fit_sum <- lmFit(expr_sum_matrix, design_sum)
+
+contrast_matrix_sum <- makeContrasts(
+  dss_hfid_vs_hfid = dss_hfid - hfid,
+  dss_hfid_vs_control = dss_hfid - control,
+  dss_vs_control = dss - control,
+  dss_hfid_vs_dss = dss_hfid - dss,      
+  levels = design_sum
+)
+
+fit2_sum <- contrasts.fit(fit_sum, contrast_matrix_sum)
+fit2_sum <- eBayes(fit2_sum)
+
+pvals <- fit2_sum$p.value[1, ]
+
+# -----------------------------
+# 6. SAVE STATS TO EXCEL
+# -----------------------------
+
+# Raw summed intensity for every sample
+sample_values <- plot_df %>%
+  arrange(group) %>%
+  select(sample_id, group, total_intensity)
+
+# Summary statistics
+group_summary <- plot_df %>%
+  group_by(group) %>%
+  summarise(
+    n = n(),
+    Mean = mean(total_intensity),
+    SD = sd(total_intensity),
+    SEM = SD/sqrt(n()),
+    Median = median(total_intensity),
+    Min = min(total_intensity),
+    Max = max(total_intensity),
+    .groups = "drop"
+  )
+
+# Limma statistics
+coef_names <- colnames(contrast_matrix_sum)
+
+stats_list <- lapply(coef_names, function(coef){
+  
+  res <- topTable(fit2_sum,
+                  coef = coef,
+                  number = Inf)
+  
+  res$Contrast <- coef
+  
+  res %>%
+    select(
+      Contrast,
+      logFC,
+      AveExpr,
+      t,
+      P.Value,
+      adj.P.Val,
+      B
+    )
+  
+})
+
+limma_stats <- bind_rows(stats_list)
+
+# Write workbook
+write_xlsx(
+  list(
+    Sample_Values = sample_values,
+    Group_Summary = group_summary,
+    Limma_Statistics = limma_stats
+  ),
+  path = "all_carb_pathway_stats_imp.xlsx"
+)
+
+# -----------------------------
+# 3. Update factor levels (No pivot_longer needed!)
+# -----------------------------
+plot_df$group <- factor(
+  plot_df$group, 
+  levels = c("control", "hfid", "dss", "dss_hfid"),
+  labels = c("Control", "HFiD", "DSS", "DSS+HFiD")
+)
+
+# -----------------------------
+# 1. Update the p-value formatting function to ONLY return asterisks
+# -----------------------------
+format_pval <- function(p) {
+  if (p < 0.001) return("***")
+  if (p < 0.01)  return("**")
+  if (p < 0.05)  return("*")
+  return("")
+}
+
+# -----------------------------
+# 3. Generate the box plot
+# -----------------------------
+p_box <- ggplot(plot_df, aes(x = group, y = total_intensity, fill = group)) +
+  geom_boxplot(alpha = 0.8, outlier.shape = NA, color = "black") +
+  geom_jitter(width = 0.15, size = 2.5, alpha = 0.8, color = "black") +
+  scale_fill_manual(values = c(
+    "Control"  = "#0072B2", 
+    "HFiD"     = "#E69F00", 
+    "DSS"      = "#CC79A7", 
+    "DSS+HFiD" = "#009E73"
+  ))
+
+# -----------------------------
+# Create significance annotations
+# -----------------------------
+
+all_pvals <- fit2_sum$p.value[1, ]
+
+comparison_names <- list(
+  c("HFiD", "DSS+HFiD"),
+  c("Control", "DSS+HFiD"),
+  c("Control", "DSS"),
+  c("DSS", "DSS+HFiD")
+)
+
+format_pval <- function(p) {
+  if (p < 0.001) "***"
+  else if (p < 0.01) "**"
+  else if (p < 0.05) "*"
+  else ""
+}
+
+sig_idx <- which(all_pvals < 0.05)
+
+sig_pairs <- comparison_names[sig_idx]
+sig_annotations <- sapply(all_pvals[sig_idx], format_pval)
+
+# Add brackets with asterisk-only annotations
+if (length(sig_pairs) > 0) {
+  p_box <- p_box + 
+    geom_signif(
+      comparisons = sig_pairs,
+      annotations = sig_annotations, # Now contains only "***", "**", or "*"
+      step_increase = 0.12,  
+      margin_top = 0.05,
+      textsize = 5,                  # Slightly larger text for visibility
+      vjust = -0.2
+    )
+}
+
+p_box <- p_box + 
+  theme_classic(base_size = 13) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(face = "bold", color = "black"),
+    axis.text.y = element_text(color = "black"),
+    plot.title = element_text(face = "bold")
+  ) +
+  labs(
+    title = "All carb pathways metabolizing proteins",
+    x = "Experimental Group",
+    y = "Protein relative abundance"
+  )
+
+print(p_box)
+
+ggsave(
+  "all_carb_pathway_proteins_boxplot_sum_imp.png",
+  p_box,
+  width=5,
+  height=5.5,
+  dpi=600
+)
+
+####################################################################################################################################
 # DSS+HFID VS DSS TAXA COLORED VOLCANO PLOT COMPARISON (ko00471|ko00460|ko00400|ko00410|ko00473|ko00450|ko00290|ko00340|ko00280|ko01230|ko00260|ko00330|ko00380|ko00300|ko00310|ko00250|ko00220|ko00350|ko00430|ko00270|ko00480|ko00360)
 ####################################################################################################################################
-
 library(dplyr)
 library(tibble)
 library(limma)
@@ -1668,6 +2350,7 @@ saveWorkbook(
   overwrite = TRUE
 )
 
+
 ####################################################################################################################################
 # VOLCANO PLOTS COMPARING CARB KOs (ko00051|ko00052)
 ####################################################################################################################################
@@ -1740,7 +2423,7 @@ annot <- crosstab %>%
 res_kegg <- res %>%
   left_join(annot, by = "Protein") %>%
   filter(grepl(
-    "ko00051|ko00052",
+    "ko00630|ko00650|ko00640|ko00500|ko01210|ko00053|ko00660|ko00660|ko00562|ko00020|ko00052|ko00010|ko00051|ko00030|ko00040|ko00620",
     KEGG_Pathway
   )) %>%
   mutate(
@@ -1913,7 +2596,7 @@ p_volcano <- ggplot(res_kegg, aes(x = logFC, y = negLog10P)) +
 # save
 # -----------------------------
 ggsave(
-  "volcano_two_carb_taxa_colored_final.png",
+  "volcano_all_carb_taxa_colored_final.png",
   p_volcano,
   width = 9,
   height = 6,
@@ -1994,7 +2677,7 @@ writeData(wb, "top_hits", top_hits)
 
 saveWorkbook(
   wb,
-  file = "limma_volcano_carb_dss_hfid_vs_hfid_males_STAT_OUTPUT.xlsx",
+  file = "limma_volcano_ALL_carb_dss_hfid_vs_hfid_males_STAT_OUTPUT.xlsx",
   overwrite = TRUE
 )
 
