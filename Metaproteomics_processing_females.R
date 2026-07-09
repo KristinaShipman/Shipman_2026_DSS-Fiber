@@ -510,7 +510,7 @@ df_full <- df_log2 %>%
 write.xlsx(df_full, "log2_data.xlsx", rowNames = FALSE)
 
 ################################################################################################
-#NORMALIZE BASED ON MEAN
+#NORMALIZE BASED ON MEDIAN
 ################################################################################################
 
 # Convert to numeric matrix while keeping rownames
